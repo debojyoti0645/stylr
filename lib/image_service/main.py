@@ -5,13 +5,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from PIL import Image, ImageOps
-from rembg import remove
+from rembg import new_session, remove
+
+RMBG_SESSION = new_session("bria-rmbg")
 
 app = FastAPI(title="Stylr Image Service")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["null", "http://127.0.0.1:5500", "http://localhost:5500"],
+    allow_origins=["null", "http://127.0.0.1:5500", "http://localhost:5500", 
+    "http://YOUR_LOCAL_IP:8000"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -59,7 +62,10 @@ async def remove_background(file: UploadFile = File(...)):
         input_bytes = input_buffer.getvalue()
 
         # Remove the background.
-        cutout_bytes = remove(input_bytes)
+        cutout_bytes = remove(
+            input_bytes,
+            session=RMBG_SESSION,
+        )
 
         with Image.open(BytesIO(cutout_bytes)) as result:
             cutout = result.convert("RGBA")
