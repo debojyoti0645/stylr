@@ -103,36 +103,8 @@ class BackgroundRemovalService {
       await initialize();
     }
 
-    final decoded = img.decodeImage(sourceBytes);
-    if (decoded == null) {
-      throw const FormatException('The selected file is not a valid image.');
-    }
-
-    final rgbImage = _prepareImage(decoded);
-    final resized = img.copyResize(
-      rgbImage,
-      width: 320,
-      height: 320,
-      interpolation: img.Interpolation.linear,
-    );
-
-    debugPrint(
-      '[BackgroundRemoval] Inference started; input image ${decoded.width}x${decoded.height}.',
-    );
-    final rgb = resized.getBytes(order: img.ChannelOrder.rgb);
-    const planeSize = 320 * 320;
-    final normalized = Float32List(3 * planeSize);
-    final mean = [0.485, 0.456, 0.406];
-    final std = [0.229, 0.224, 0.225];
-
-    for (var i = 0; i < rgb.length; i += 3) {
-      final pixelIndex = i ~/ 3;
-      normalized[pixelIndex] = ((rgb[i] / 255.0) - mean[0]) / std[0];
-      normalized[planeSize + pixelIndex] =
-          ((rgb[i + 1] / 255.0) - mean[1]) / std[1];
-      normalized[(2 * planeSize) + pixelIndex] =
-          ((rgb[i + 2] / 255.0) - mean[2]) / std[2];
-    }
+    final normalized = await compute(_prepareModelInput, sourceBytes);
+    debugPrint('[BackgroundRemoval] Inference started on 320x320 input.');
 
     debugPrint(
       '[BackgroundRemoval] Input tensor: float32 [1, 3, 320, 320], RGB, '
@@ -201,113 +173,12 @@ class BackgroundRemovalService {
       );
     }
 
-    final maskImage = img.Image(width: 320, height: 320);
-    for (var y = 0; y < 320; y++) {
-      for (var x = 0; x < 320; x++) {
-        final value = maskPixels[(y * 320) + x];
-        final alpha = (value.clamp(0.0, 1.0) * 255.0).round();
-        maskImage.setPixelRgba(x, y, alpha, alpha, alpha, 255);
-      }
-    }
-
-    final resizedMask = img.copyResize(
-      maskImage,
-      width: rgbImage.width,
-      height: rgbImage.height,
-      interpolation: img.Interpolation.linear,
-    );
-
-    final cutoutResult = applyForegroundMask(
-      rgbImage,
-      resizedMask,
-      threshold: threshold,
-    );
-    final cutout = cutoutResult.image;
-    final foregroundPercent =
-        cutoutResult.foregroundPixels *
-        100 /
-        (rgbImage.width * rgbImage.height);
-    debugPrint(
-      '[BackgroundRemoval] Foreground after threshold $threshold: '
-      '${foregroundPercent.toStringAsFixed(2)}%.',
-    );
-
-    final bounds = _findNonTransparentBounds(cutout);
-    if (bounds == null) {
-      throw StateError('No foreground pixels were detected in the photo.');
-    }
-
-    final cropX = bounds.$1;
-    final cropY = bounds.$2;
-    final cropWidth = bounds.$3;
-    final cropHeight = bounds.$4;
-
-    final cropped = img.Image(
-      width: cropWidth,
-      height: cropHeight,
-      numChannels: 4,
-    );
-    for (var y = 0; y < cropHeight; y++) {
-      for (var x = 0; x < cropWidth; x++) {
-        final pixel = cutout.getPixel(cropX + x, cropY + y);
-        cropped.setPixel(x, y, pixel);
-      }
-    }
-
-    final padded = centerCutoutOnWhiteCanvas(cropped, squareSize);
-    final outputBytes = img.encodePng(padded);
-    final encodedImage = img.decodeImage(outputBytes);
-    if (encodedImage == null ||
-        encodedImage.width != squareSize ||
-        encodedImage.height != squareSize ||
-        encodedImage.numChannels != 4) {
-      throw StateError(
-        'Encoded PNG did not preserve the expected ${squareSize}x$squareSize '
-        'RGBA canvas.',
-      );
-    }
-    final transparentPixels = countTransparentPixels(encodedImage);
-    if (transparentPixels == 0) {
-      throw StateError(
-        'Encoded PNG contains no transparent pixels outside the foreground.',
-      );
-    }
-    debugPrint(
-      '[BackgroundRemoval] PNG verified: ${encodedImage.width}x'
-      '${encodedImage.height}, RGBA, '
-      '${(transparentPixels * 100 / (squareSize * squareSize)).toStringAsFixed(2)}%'
-      ' transparent.',
-    );
-    return outputBytes;
-  }
-
-  img.Image _prepareImage(img.Image image) {
-    return image;
-  }
-
-  (int, int, int, int)? _findNonTransparentBounds(img.Image image) {
-    var minX = image.width;
-    var minY = image.height;
-    var maxX = -1;
-    var maxY = -1;
-
-    for (var y = 0; y < image.height; y++) {
-      for (var x = 0; x < image.width; x++) {
-        final pixel = image.getPixel(x, y);
-        if (pixel.a > 0) {
-          if (x < minX) minX = x;
-          if (y < minY) minY = y;
-          if (x > maxX) maxX = x;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-
-    if (maxX < minX || maxY < minY) {
-      return null;
-    }
-
-    return (minX, minY, maxX - minX + 1, maxY - minY + 1);
+    return compute(_createTransparentCutout, <String, Object>{
+      'sourceBytes': sourceBytes,
+      'maskPixels': Float32List.fromList(maskPixels),
+      'threshold': threshold,
+      'squareSize': squareSize,
+    });
   }
 
   Future<void> dispose() async {
@@ -316,4 +187,135 @@ class BackgroundRemovalService {
     _runtime = null;
     _initialization = null;
   }
+}
+
+Float32List _prepareModelInput(Uint8List sourceBytes) {
+  final decoded = img.decodeImage(sourceBytes);
+  if (decoded == null) {
+    throw const FormatException('The selected file is not a valid image.');
+  }
+
+  final resized = img.copyResize(
+    decoded,
+    width: 320,
+    height: 320,
+    interpolation: img.Interpolation.linear,
+  );
+  final rgb = resized.getBytes(order: img.ChannelOrder.rgb);
+  const planeSize = 320 * 320;
+  final normalized = Float32List(3 * planeSize);
+  const mean = [0.485, 0.456, 0.406];
+  const std = [0.229, 0.224, 0.225];
+
+  for (var i = 0; i < rgb.length; i += 3) {
+    final pixelIndex = i ~/ 3;
+    normalized[pixelIndex] = ((rgb[i] / 255.0) - mean[0]) / std[0];
+    normalized[planeSize + pixelIndex] =
+        ((rgb[i + 1] / 255.0) - mean[1]) / std[1];
+    normalized[(2 * planeSize) + pixelIndex] =
+        ((rgb[i + 2] / 255.0) - mean[2]) / std[2];
+  }
+  return normalized;
+}
+
+Uint8List _createTransparentCutout(Map<String, Object> request) {
+  final sourceBytes = request['sourceBytes']! as Uint8List;
+  final maskPixels = request['maskPixels']! as Float32List;
+  final threshold = request['threshold']! as double;
+  final squareSize = request['squareSize']! as int;
+  final rgbImage = img.decodeImage(sourceBytes);
+  if (rgbImage == null) {
+    throw const FormatException('The selected file is not a valid image.');
+  }
+
+  final maskImage = img.Image(width: 320, height: 320);
+  for (var y = 0; y < 320; y++) {
+    for (var x = 0; x < 320; x++) {
+      final value = maskPixels[(y * 320) + x];
+      final alpha = (value.clamp(0.0, 1.0) * 255.0).round();
+      maskImage.setPixelRgba(x, y, alpha, alpha, alpha, 255);
+    }
+  }
+
+  final resizedMask = img.copyResize(
+    maskImage,
+    width: rgbImage.width,
+    height: rgbImage.height,
+    interpolation: img.Interpolation.linear,
+  );
+  final cutoutResult = applyForegroundMask(
+    rgbImage,
+    resizedMask,
+    threshold: threshold,
+  );
+  final cutout = cutoutResult.image;
+  final foregroundPercent =
+      cutoutResult.foregroundPixels * 100 / (rgbImage.width * rgbImage.height);
+  debugPrint(
+    '[BackgroundRemoval] Foreground after threshold $threshold: '
+    '${foregroundPercent.toStringAsFixed(2)}%.',
+  );
+
+  final bounds = _findNonTransparentBounds(cutout);
+  if (bounds == null) {
+    throw StateError('No foreground pixels were detected in the photo.');
+  }
+
+  final (cropX, cropY, cropWidth, cropHeight) = bounds;
+  final cropped = img.Image(
+    width: cropWidth,
+    height: cropHeight,
+    numChannels: 4,
+  );
+  for (var y = 0; y < cropHeight; y++) {
+    for (var x = 0; x < cropWidth; x++) {
+      cropped.setPixel(x, y, cutout.getPixel(cropX + x, cropY + y));
+    }
+  }
+
+  final padded = centerCutoutOnWhiteCanvas(cropped, squareSize);
+  final outputBytes = img.encodePng(padded);
+  final encodedImage = img.decodeImage(outputBytes);
+  if (encodedImage == null ||
+      encodedImage.width != squareSize ||
+      encodedImage.height != squareSize ||
+      encodedImage.numChannels != 4) {
+    throw StateError(
+      'Encoded PNG did not preserve the expected ${squareSize}x$squareSize '
+      'RGBA canvas.',
+    );
+  }
+  final transparentPixels = countTransparentPixels(encodedImage);
+  if (transparentPixels == 0) {
+    throw StateError(
+      'Encoded PNG contains no transparent pixels outside the foreground.',
+    );
+  }
+  debugPrint(
+    '[BackgroundRemoval] PNG verified: ${encodedImage.width}x'
+    '${encodedImage.height}, RGBA, '
+    '${(transparentPixels * 100 / (squareSize * squareSize)).toStringAsFixed(2)}%'
+    ' transparent.',
+  );
+  return outputBytes;
+}
+
+(int, int, int, int)? _findNonTransparentBounds(img.Image image) {
+  var minX = image.width;
+  var minY = image.height;
+  var maxX = -1;
+  var maxY = -1;
+
+  for (var y = 0; y < image.height; y++) {
+    for (var x = 0; x < image.width; x++) {
+      if (image.getPixel(x, y).a <= 0) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (maxX < minX || maxY < minY) return null;
+  return (minX, minY, maxX - minX + 1, maxY - minY + 1);
 }
