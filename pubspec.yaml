@@ -1,6 +1,6 @@
 name: stylr
 description: "AI-powered wardrobe management and style assistant mobile app."
-publish_to: 'none'
+publish_to: "none"
 version: 0.1.0
 
 environment:
@@ -10,8 +10,10 @@ dependencies:
   flutter:
     sdk: flutter
   hive_flutter: ^1.1.0
+  image: ^4.5.0
   image_picker: ^1.2.2
   path_provider: ^2.1.5
+  flutter_onnxruntime: ^1.8.1
 
 dev_dependencies:
   flutter_test:
@@ -22,3 +24,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icon.png
+    - assets/models/u2netp.onnx

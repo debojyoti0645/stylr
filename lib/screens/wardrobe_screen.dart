@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:stylr/constants/app_colors.dart';
 import 'package:stylr/models/clothing_item.dart';
+import 'package:stylr/services/background_removal_service.dart';
 import 'package:stylr/services/wardrobe_image_storage.dart';
 import 'package:stylr/services/wardrobe_storage.dart';
 
@@ -34,13 +36,51 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
   }
 
   Future<void> _addClothing(ImageSource source) async {
+    final dialogContext = context;
+    final navigator = Navigator.of(dialogContext, rootNavigator: true);
+    final messenger = ScaffoldMessenger.maybeOf(dialogContext);
+
     try {
       final photo = await _picker.pickImage(source: source, imageQuality: 90);
 
       if (photo == null || !mounted) return;
 
+      String? processedImagePath;
+      if (mounted) {
+        unawaited(
+          showDialog<void>(
+            context: dialogContext,
+            barrierDismissible: false,
+            builder: (_) => const AlertDialog(
+              content: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(),
+                  SizedBox(width: 18),
+                  Expanded(child: Text('Removing background locally...')),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+
+      try {
+        final processedFile = await BackgroundRemovalService().processImageFile(
+          File(photo.path),
+        );
+        processedImagePath = processedFile.path;
+      } catch (error) {
+        processedImagePath = null;
+        debugPrint('Background removal failed: $error');
+      } finally {
+        if (navigator.canPop()) {
+          navigator.pop();
+        }
+      }
+
       final details = await showDialog<Map<String, String>>(
-        context: context,
+        context: dialogContext,
         builder: (_) => const _AddClothingDialog(),
       );
 
@@ -57,6 +97,7 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
         name: details['name']!,
         category: details['category']!,
         originalImagePath: savedPath,
+        cleanImagePath: processedImagePath,
         dateAdded: DateTime.now(),
       );
 
@@ -66,15 +107,21 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
 
       _loadItems();
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Clothing item saved!')));
+      messenger?.showSnackBar(
+        SnackBar(
+          content: Text(
+            processedImagePath == null
+                ? 'Clothing item saved with the original image.'
+                : 'Clothing item saved with a background-cleaned preview.',
+          ),
+        ),
+      );
     } catch (error) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Could not add item: $error')));
+      messenger?.showSnackBar(
+        SnackBar(content: Text('Could not add item: $error')),
+      );
     }
   }
 
