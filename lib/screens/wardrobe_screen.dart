@@ -46,10 +46,11 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       if (photo == null || !mounted) return;
 
       String? processedImagePath;
+      Object? processingFailure;
       if (mounted) {
         unawaited(
           showDialog<void>(
-            context: dialogContext,
+            context: context,
             barrierDismissible: false,
             builder: (_) => const AlertDialog(
               content: Row(
@@ -72,15 +73,19 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
         processedImagePath = processedFile.path;
       } catch (error) {
         processedImagePath = null;
-        debugPrint('Background removal failed: $error');
+        processingFailure = error;
+        debugPrint(
+          '[BackgroundRemoval] Failed; keeping the original photo: $error',
+        );
       } finally {
         if (navigator.canPop()) {
           navigator.pop();
         }
       }
 
+      if (!mounted) return;
       final details = await showDialog<Map<String, String>>(
-        context: dialogContext,
+        context: context,
         builder: (_) => const _AddClothingDialog(),
       );
 
@@ -110,7 +115,9 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
       messenger?.showSnackBar(
         SnackBar(
           content: Text(
-            processedImagePath == null
+            processingFailure != null
+                ? 'Background removal failed. The original photo was saved.'
+                : processedImagePath == null
                 ? 'Clothing item saved with the original image.'
                 : 'Clothing item saved with a background-cleaned preview.',
           ),
@@ -285,6 +292,31 @@ class _WardrobeScreenState extends State<WardrobeScreen> {
                                 child: Icon(
                                   Icons.broken_image_outlined,
                                   size: 40,
+                                ),
+                              ),
+                            ),
+                            Positioned(
+                              top: 10,
+                              left: 10,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: AppColors.white.withValues(alpha: 0.9),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 5,
+                                  ),
+                                  child: Text(
+                                    item.cleanImagePath == null
+                                        ? 'Original photo'
+                                        : 'Processed cutout',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
